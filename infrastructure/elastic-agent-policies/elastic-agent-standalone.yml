@@ -1,0 +1,42 @@
+# infrastructure/elastic-agent-policies/elastic-agent-standalone.yml
+#
+# Fallback: standalone Elastic Agent config (not Fleet-managed) for the 2
+# VMs, in case Fleet server isn't reachable/available in the assessment
+# environment. Place at /etc/elastic-agent/elastic-agent.yml on each VM.
+
+outputs:
+  default:
+    type: elasticsearch
+    hosts: ["${ELASTICSEARCH_HOST}:9200"]
+    username: "${ES_USER}"
+    password: "${ES_PASSWORD}"
+
+inputs:
+  - type: system/metrics
+    id: system-metrics
+    use_output: default
+    streams:
+      - metricset: cpu
+        data_stream.dataset: system.cpu
+        period: 10s
+      - metricset: memory
+        data_stream.dataset: system.memory
+        period: 10s
+      - metricset: network
+        data_stream.dataset: system.network
+        period: 10s
+      - metricset: filesystem
+        data_stream.dataset: system.filesystem
+        period: 60s
+      - metricset: diskio
+        data_stream.dataset: system.diskio
+        period: 10s
+      - metricset: load
+        data_stream.dataset: system.load
+        period: 10s
+      - metricset: process
+        data_stream.dataset: system.process
+        period: 10s
+      - metricset: process_summary
+        data_stream.dataset: system.process_summary
+        period: 10s

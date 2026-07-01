@@ -1,0 +1,144 @@
+# values-gateway.yaml
+# OTel Collector deployed as a central Deployment ("gateway").
+# Role: receives batched OTLP data from all node agents, applies tail-based
+# sampling (needs the FULL trace in one place, hence centralised here and
+# not on the DaemonSet), then exports to the Elastic APM Server OTLP intake.
+#
+# This is the only component holding the Elastic APM Server secret token.
+
+mode: deployment
+
+image:
+  repository: otel/opentelemetry-collector-contrib
+
+replicaCount: 2   # HA gateway; tail-sampling groups spans by trace ID across
+                   # instances via the load-balancing exporter pattern if scaled
+                   # further — documented as a follow-up in DECISIONS.md
+
+
+config:
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+          endpoint: 0.0.0.0:4317
+        http:
+          endpoint: 0.0.0.0:4318
+
+  processors:
+    memory_limiter:
+      check_interval: 5s
+      limit_percentage: 80
+      spike_limit_percentage: 25
+
+    resourcedetection:
+      detectors: [env]
+      timeout: 5s
+
+    # Tail-based sampling policy (documented per Section 1.1 requirement):
+    #   - always keep traces containing an error
+    #   - always keep traces slower than 2s (p99-ish outlier catch)
+    #   - sample 10% of everything else
+    # Rationale: errors and slow requests are the highest-signal traces for
+    # debugging; sampling the "boring" 90% keeps storage/cost down without
+    # losing the ability to see typical latency distribution (10% is enough
+    # for percentile estimates on top of RED metrics, which come from the
+    # full unsampled counts via APM Server's metrics aggregation, not traces).
+    tail_sampling:
+      decision_wait: 10s
+      num_traces: 50000
+      expected_new_traces_per_sec: 100
+      policies:
+        - name: always-sample-errors
+          type: status_code
+          status_code:
+            status_codes: [ERROR]
+        - name: always-sample-slow
+          type: latency
+          latency:
+            threshold_ms: 2000
+        - name: baseline-10-percent
+          type: probabilistic
+          probabilistic:
+            sampling_percentage: 10
+
+    batch:
+      timeout: 5s
+      send_batch_size: 2048
+
+  exporters:
+    otlp/elastic:
+      # Elastic Cloud Serverless (Observability project) unified OTLP endpoint.
+      # Note: serverless projects use "ApiKey <key>" auth, NOT the older
+      # "Bearer <secret_token>" format used by classic self-managed APM Server.
+      endpoint: "${ELASTIC_OTLP_ENDPOINT}"
+      headers:
+        Authorization: "ApiKey ${ELASTIC_API_KEY}"
+      tls:
+        insecure: false   # endpoint is HTTPS on :443, real TLS in use
+
+    debug:
+      verbosity: basic
+
+  service:
+    telemetry:
+      logs:
+        level: info
+
+    extensions: [zpages, health_check]
+
+    pipelines:
+      traces:
+        receivers: [otlp]
+        processors: [memory_limiter, resourcedetection, tail_sampling, batch]
+        exporters: [otlp/elastic]
+
+      metrics:
+        receivers: [otlp]
+        processors: [memory_limiter, resourcedetection, batch]
+        exporters: [otlp/elastic]
+
+      logs:
+        receivers: [otlp]
+        processors: [memory_limiter, resourcedetection, batch]
+        exporters: [otlp/elastic]
+
+  extensions:
+    zpages:
+      endpoint: 0.0.0.0:55679
+    health_check:
+      endpoint: 0.0.0.0:13133
+
+# Secrets pulled from a K8s Secret, not hardcoded — see infrastructure notes.
+# Secret must contain keys: ELASTIC_OTLP_ENDPOINT, ELASTIC_API_KEY
+extraEnvs:
+  - name: ELASTIC_OTLP_ENDPOINT
+    valueFrom:
+      secretKeyRef:
+        name: elastic-otlp-credentials
+        key: ELASTIC_OTLP_ENDPOINT
+  - name: ELASTIC_API_KEY
+    valueFrom:
+      secretKeyRef:
+        name: elastic-otlp-credentials
+        key: ELASTIC_API_KEY
+
+resources:
+  limits:
+    cpu: "1"
+    memory: 1Gi
+  requests:
+    cpu: 250m
+    memory: 512Mi
+
+# Own health/perf metrics (requirement 1.1.6): the /metrics on :8888 and
+# zpages on :55679 are scraped by... this same collector's Prometheus
+# receiver pointed at itself in a follow-up iteration, OR by the K8s System
+# integration if using Elastic Agent for infra (Section 3). Documented as
+# a deliberate reuse of Section 3's infra pipeline rather than duplicating it.
+ports:
+  zpages:
+    enabled: true
+    containerPort: 55679
+    servicePort: 55679
+    protocol: TCP

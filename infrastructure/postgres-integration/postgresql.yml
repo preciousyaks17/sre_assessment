@@ -1,0 +1,62 @@
+# infrastructure/postgres-integration/postgresql.yml
+#
+# Metricbeat postgresql module config (used as the Beats fallback path if
+# Fleet-managed Elastic Agent isn't available in the assessment environment;
+# if Fleet IS available, prefer configuring the PostgreSQL integration
+# directly in Kibana -> Fleet -> Agent Policies, which is functionally
+# equivalent to this file and covers the same metricsets).
+#
+# Requirement coverage (Section 3.2):
+#   - active connections vs max_connections   -> database metricset
+#   - transaction rate (commit/rollback)      -> database metricset
+#   - tuple ops (insert/update/delete/fetch)  -> database metricset
+#   - cache hit ratio                          -> database metricset (blks_hit/blks_read)
+#   - replication lag                          -> replication metricset (if applicable)
+#   - table bloat / dead tuples                -> bgwriter + statement metricsets
+#   - slow query count                         -> requires pg_stat_statements, see below
+#   - lock contention                          -> activity metricset
+#   - WAL generation rate                      -> database metricset (bytes)
+
+metricbeat.modules:
+  - module: postgresql
+    metricsets:
+      - database
+      - bgwriter
+      - activity
+      - statement
+    period: 15s
+    hosts: ["postgres://${PG_USER}:${PG_PASSWORD}@${PG_HOST}:5432?sslmode=disable"]
+    username: "${PG_USER}"
+    password: "${PG_PASSWORD}"
+
+output.elasticsearch:
+  hosts: ["${ELASTICSEARCH_HOST}:9200"]
+  username: "${ES_USER}"
+  password: "${ES_PASSWORD}"
+  index: "metrics-postgresql-default"
+
+setup.ilm.enabled: true
+setup.template.enabled: true
+
+# --- Prerequisite: enable pg_stat_statements for slow-query visibility ---
+# Run once against the target Postgres instance (not part of Metricbeat
+# config, but required for requirement 3.2.4):
+#
+#   CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
+#
+# and in postgresql.conf:
+#   shared_preload_libraries = 'pg_stat_statements'
+#   pg_stat_statements.track = all
+#
+# Then the "top 5 slowest queries" query in Kibana Discover (or via
+# Metricbeat's query metricset pointed at pg_stat_statements) is:
+#
+#   SELECT query, calls, total_exec_time, mean_exec_time, rows
+#   FROM pg_stat_statements
+#   ORDER BY mean_exec_time DESC
+#   LIMIT 5;
+#
+# For log-based slow query capture instead: set `log_min_duration_statement
+# = 500` (ms) in postgresql.conf and enable the Elastic Agent PostgreSQL
+# log integration / Filebeat postgresql module fileset to ship
+# /var/log/postgresql/*.log into logs-postgresql.log-* .

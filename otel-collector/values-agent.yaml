@@ -1,0 +1,138 @@
+# values-agent.yaml
+# OTel Collector deployed as a DaemonSet — one instance per node.
+# Role: node-level collection (hostmetrics, local pod OTLP traffic, k8s log tailing)
+# then forwards everything to the central gateway Deployment for
+# batching/tail-sampling/export, rather than exporting to Elastic directly.
+#
+# Rationale (see docs/DECISIONS.md): agents stay "dumb and cheap" — no heavy
+# processing on every node — so the gateway is the single place sampling
+# policy and Elastic auth config lives. This also means app pods only need
+# to know about their local node's agent (via hostIP), not the Elastic
+# endpoint or any secret token.
+
+mode: daemonset
+
+image:
+  repository: otel/opentelemetry-collector-contrib
+
+
+presets:
+  hostMetrics:
+    enabled: true
+  kubernetesAttributes:
+    enabled: true
+  kubeletMetrics:
+    enabled: true
+  logsCollection:
+    enabled: false   # log shipping handled by Filebeat/Elastic Agent per assessment scope
+
+
+config:
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+          endpoint: 0.0.0.0:4317
+        http:
+          endpoint: 0.0.0.0:4318
+
+    hostmetrics:
+      root_path: /hostfs
+      collection_interval: 15s
+      scrapers:
+        cpu: {}
+        memory: {}
+        disk: {}
+        filesystem: {}
+        network: {}
+        load: {}
+        processes: {}
+
+    zipkin:
+      endpoint: 0.0.0.0:9411
+
+  processors:
+    memory_limiter:
+      check_interval: 5s
+      limit_percentage: 75
+      spike_limit_percentage: 20
+
+    batch:
+      timeout: 5s
+      send_batch_size: 1024
+
+    resourcedetection:
+      detectors: [env]
+      timeout: 5s
+
+    k8sattributes:
+      auth_type: serviceAccount
+      extract:
+        metadata:
+          - k8s.pod.name
+          - k8s.namespace.name
+          - k8s.deployment.name
+          - k8s.node.name
+          - k8s.pod.uid
+      pod_association:
+        - sources:
+            - from: resource_attribute
+              name: k8s.pod.ip
+        - sources:
+            - from: connection
+
+  exporters:
+    # Agents do NOT talk to Elastic directly — they forward to the gateway.
+    # This keeps the Elastic APM Server secret token in one place (the gateway)
+    # instead of distributed to every node.
+    otlp/gateway:
+      endpoint: otel-gateway-opentelemetry-collector.observability.svc.cluster.local:4317
+      tls:
+        insecure: true   # in-cluster traffic; TLS terminates at the gateway->Elastic hop
+
+    debug:
+      verbosity: basic
+
+  service:
+    telemetry:
+      logs:
+        level: info
+
+    extensions: [zpages, health_check]
+
+    pipelines:
+      traces:
+        receivers: [otlp, zipkin]
+        processors: [k8sattributes, resourcedetection, memory_limiter, batch]
+        exporters: [otlp/gateway]
+
+      metrics:
+        receivers: [otlp, hostmetrics]
+        processors: [k8sattributes, resourcedetection, memory_limiter, batch]
+        exporters: [otlp/gateway]
+
+      logs:
+        receivers: [otlp]
+        processors: [k8sattributes, resourcedetection, memory_limiter, batch]
+        exporters: [otlp/gateway]
+
+  extensions:
+    zpages:
+      endpoint: 0.0.0.0:55679
+    health_check:
+      endpoint: 0.0.0.0:13133
+
+ports:
+  zpages:
+    enabled: true
+    containerPort: 55679
+    servicePort: 55679
+    protocol: TCP
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 500Mi
+  requests:
+    cpu: 100m
+    memory: 200Mi

@@ -1,0 +1,56 @@
+# infrastructure/nginx-integration/nginx-metrics-otel.yaml
+#
+# NGINX Ingress Controller metrics collection, using the OTel Collector's
+# Prometheus receiver scraping the ingress controller's built-in
+# /metrics endpoint (nginx-ingress exposes Prometheus metrics natively —
+# this avoids needing a separate Metricbeat nginx module deployment and
+# reuses the same OTel pipeline already built in Section 1).
+#
+# Add this as an ADDITIONAL receiver on the gateway collector (values-gateway.yaml)
+# or as a separate scrape-only collector Deployment if isolating LB
+# monitoring from the app-tracing gateway is preferred — documented as a
+# design choice: kept as an addition to the existing gateway here to avoid
+# running a third collector topology.
+
+receivers:
+  prometheus:
+    config:
+      scrape_configs:
+        - job_name: 'nginx-ingress-controller'
+          scrape_interval: 15s
+          kubernetes_sd_configs:
+            - role: pod
+              namespaces:
+                names: ["ingress-nginx"]
+          relabel_configs:
+            - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name]
+              regex: ingress-nginx
+              action: keep
+            - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_port]
+              action: replace
+              target_label: __address__
+              regex: (.+)
+              replacement: "${1}"
+
+exporters:
+  otlp/elastic:
+    endpoint: "${ELASTIC_APM_SERVER_URL}:8200"
+    headers:
+      Authorization: "Bearer ${ELASTIC_APM_SECRET_TOKEN}"
+
+service:
+  pipelines:
+    metrics/nginx:
+      receivers: [prometheus]
+      processors: [batch]
+      exporters: [otlp/elastic]
+
+# Metrics exposed by nginx-ingress (nginx_ingress_controller_*) map directly
+# to the required panels:
+#   - request rate per ingress/host/path -> nginx_ingress_controller_requests
+#   - status code distribution           -> label `status` on the same metric
+#   - request latency histograms         -> nginx_ingress_controller_request_duration_seconds
+#   - active connections                 -> nginx_ingress_controller_nginx_process_connections
+#   - SSL cert expiry                    -> nginx_ingress_controller_ssl_expire_time_seconds
+#   - upstream vs total response time    -> nginx_ingress_controller_response_duration_seconds
+#     vs nginx_ingress_controller_request_duration_seconds (diff = LB overhead)

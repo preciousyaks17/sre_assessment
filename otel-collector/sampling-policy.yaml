@@ -1,0 +1,44 @@
+# sampling-policy.yaml
+# Standalone reference copy of the tail-sampling policy used in the gateway
+# (values-gateway.yaml). Kept separate so the sampling strategy can be
+# reviewed/tuned without touching the full Helm values file, and so it's
+# easy to point to in DECISIONS.md.
+
+policies:
+  - name: always-sample-errors
+    type: status_code
+    status_code:
+      status_codes: [ERROR]
+    rationale: >
+      Every failed transaction is high-value for debugging. Cost of storing
+      100% of errors is low because errors should be the minority of traffic
+      in a healthy system.
+
+  - name: always-sample-slow
+    type: latency
+    latency:
+      threshold_ms: 2000
+    rationale: >
+      Outlier-latency requests are disproportionately useful for finding
+      performance regressions and are rare enough that keeping all of them
+      doesn't meaningfully increase storage cost.
+
+  - name: baseline-10-percent
+    type: probabilistic
+    probabilistic:
+      sampling_percentage: 10
+    rationale: >
+      For "boring" successful, fast requests, a 10% sample is enough to
+      reconstruct approximate latency percentiles and service-map topology
+      without paying to store every single trace. RED-metric rates/counts
+      still come from APM Server's own aggregation of all incoming
+      transactions (pre-sampling), so the 10% only affects trace *storage*,
+      not the accuracy of dashboard rate/error metrics.
+
+notes: |
+  If this were a real production tune (not an assessment), next steps would be:
+  - Add a rate-limiting policy as a safety net against sampling-storm cost blowups.
+  - Consider per-service overrides (e.g. sample checkout/payment flows higher
+    than static asset requests) via a `and` composite policy.
+  - Re-evaluate decision_wait vs. num_traces under real traffic volume —
+    values here are starting points, not load-tested.

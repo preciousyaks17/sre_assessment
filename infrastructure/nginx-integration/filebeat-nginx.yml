@@ -1,0 +1,40 @@
+# infrastructure/nginx-integration/filebeat-nginx.yml
+#
+# Ships structured JSON access logs from the NGINX Ingress Controller into
+# Elasticsearch (requirement: logs-nginx.access-* data stream).
+#
+# Prerequisite: the ingress-nginx ConfigMap needs a JSON log-format set:
+#
+#   log-format-escape-json: "true"
+#   log-format-upstream: >-
+#     {"time": "$time_iso8601", "remote_addr": "$remote_addr",
+#      "host": "$host", "request": "$request", "status": "$status",
+#      "body_bytes_sent": "$body_bytes_sent", "request_time": "$request_time",
+#      "upstream_response_time": "$upstream_response_time",
+#      "upstream_addr": "$upstream_addr", "http_user_agent": "$http_user_agent"}
+#
+# applied via `kubectl edit configmap ingress-nginx-controller -n ingress-nginx`
+# or the Helm values for the ingress-nginx chart.
+
+filebeat.inputs:
+  - type: container
+    paths:
+      - /var/log/containers/*ingress-nginx-controller*.log
+    processors:
+      - decode_json_fields:
+          fields: ["message"]
+          target: "nginx"
+          overwrite_keys: true
+
+output.elasticsearch:
+  hosts: ["${ELASTICSEARCH_HOST}:9200"]
+  username: "${ES_USER}"
+  password: "${ES_PASSWORD}"
+  index: "logs-nginx.access-default"
+
+setup.ilm.enabled: true
+setup.template.enabled: true
+
+# Alternative (preferred if Fleet is available): use the Elastic Agent
+# "NGINX" integration's log collection in Fleet policy UI instead of a
+# standalone Filebeat — functionally equivalent, less to hand-maintain.

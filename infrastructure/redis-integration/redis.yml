@@ -1,0 +1,52 @@
+# infrastructure/redis-integration/redis.yml
+#
+# Metricbeat redis module config (Beats fallback path; prefer Fleet's Redis
+# integration if available — same metricsets, configured via Kibana UI).
+#
+# Requirement coverage (Section 3.2, Redis):
+#   - connected clients            -> info metricset (clients.connected_clients)
+#   - memory usage vs maxmemory    -> info metricset (memory.used_memory / maxmemory)
+#   - keyspace hits/misses ratio   -> info metricset (stats.keyspace_hits/misses)
+#   - evicted keys                 -> info metricset (stats.evicted_keys)
+#   - command latency per op type  -> requires Redis LATENCY/slowlog, see below
+#   - replication offset delta     -> info metricset (replication.*)
+#   - keys per database             -> keyspace metricset
+
+metricbeat.modules:
+  - module: redis
+    metricsets:
+      - info
+      - keyspace
+    period: 10s
+    hosts: ["${REDIS_HOST}:6379"]
+    password: "${REDIS_PASSWORD}"
+
+  # Slow log collection (requirement: "enable Redis slow log collection via
+  # the integration and demonstrate slow commands are visible in Discover")
+  - module: redis
+    metricsets:
+      - slowlog
+    period: 10s
+    hosts: ["${REDIS_HOST}:6379"]
+    password: "${REDIS_PASSWORD}"
+
+output.elasticsearch:
+  hosts: ["${ELASTICSEARCH_HOST}:9200"]
+  username: "${ES_USER}"
+  password: "${ES_PASSWORD}"
+  index: "metrics-redis-default"
+
+setup.ilm.enabled: true
+setup.template.enabled: true
+
+# --- Prerequisite for slowlog: set a threshold on the Redis side ---
+#   CONFIG SET slowlog-log-slower-than 10000   # microseconds (10ms)
+#   CONFIG SET slowlog-max-len 256
+#
+# Cluster note: if REDIS_HOST points at a Redis Cluster, either target each
+# node individually (Metricbeat doesn't natively fan out across cluster
+# nodes) or use `redis` module against each node's address as a separate
+# entry in metricbeat.modules, tagged with a `node` field for dashboard
+# filtering. Documented here as a known cluster-topology caveat rather than
+# solved, pending confirmation of the actual cluster layout in the
+# assessment environment.
