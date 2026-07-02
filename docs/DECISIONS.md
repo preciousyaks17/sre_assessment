@@ -168,3 +168,32 @@ frontend); custom spans wiring above; Sections 2 and remainder of 3.
 pattern — cost real time verifying data had landed. Worth checking `GET
 _cat/indices?v&s=docs.count:desc` rather than guessing an index pattern
 when verifying ingestion on serverless projects.
+
+## 1.3 Trace Validation — Status
+
+Ran `generate-checkout-traffic.sh` against the live frontend
+(browse → cart → checkout, plus one deliberate invalid-card request).
+
+**Confirmed working:**
+- Real trace waterfall captured for `grpc.hipstershop.PaymentService/Charge`
+  (9 samples captured during the test run), status OK, real latency
+  (346-416μs). Screenshot:
+  `docs/screenshots/apm-trace-waterfall-paymentservice-charge.png`
+
+**Known gap, explained (not a bug):** Service Map shows paymentservice as
+an isolated node with no upstream/downstream connections
+(screenshot: `docs/screenshots/apm-service-map-paymentservice-isolated.png`).
+This is expected given only 2 of 11 services are instrumented —
+Service Map draws edges from propagated trace context between
+*instrumented* services, and checkoutservice/frontend (the actual callers)
+aren't instrumented, so Elastic has no context to draw a connection from.
+Not a defect in the pipeline; a direct, explainable consequence of the
+documented instrumentation scope decision.
+
+**Error-span requirement (1.3.5):** the deliberately-invalid checkout
+request returned a 422 from `frontend`, but frontend itself isn't
+instrumented, so no error span was generated for it — the request never
+reached `paymentservice` at all (frontend likely rejected it via its own
+input validation before any downstream call). No error trace captured
+under the current instrumentation scope; would require instrumenting
+frontend to close this specific gap.
