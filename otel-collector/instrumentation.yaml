@@ -1,0 +1,29 @@
+apiVersion: opentelemetry.io/v1alpha1
+kind: Instrumentation
+metadata:
+  name: otel-instrumentation
+  namespace: default
+spec:
+  exporter:
+    endpoint: http://otel-gateway-opentelemetry-collector.observability.svc.cluster.local:4317
+  propagators:
+    - tracecontext
+    - baggage
+  sampler:
+    type: parentbased_traceidratio
+    argument: "1"
+  env:
+    - name: OTEL_EXPORTER_OTLP_PROTOCOL
+      value: "grpc"
+    - name: OTEL_LOG_LEVEL
+      value: "debug"
+  python:
+    env:
+      - name: OTEL_METRICS_EXPORTER
+        value: "otlp"
+      - name: OTEL_PYTHON_DISABLED_INSTRUMENTATIONS
+        value: "system_metrics"
+  nodejs:
+    env:
+      - name: OTEL_METRICS_EXPORTER
+        value: "otlp"

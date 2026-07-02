@@ -116,3 +116,55 @@ criteria, which assesses architectural correctness, not 100% pod
 scheduling success on an intentionally small/cheap node pool.
 **Documented here as a known, understood, and consciously-deprioritized
 issue** rather than a silent gap.
+
+## 1.1/1.2 Verification Status (live, against real cluster + Elastic)
+
+**1.1 — Collector deployment:** DaemonSet (agent) + Deployment (gateway)
+topology is live on AKS, exporting via OTLP to Elastic Cloud Serverless.
+Confirmed via Kibana: `metrics-*` data view shows 32k+ hostmetrics
+documents; `k8sattributes` processor confirms pod/namespace/deployment
+enrichment on spans. One known gap: 1 of 3 DaemonSet agent pods is stuck
+`Pending` due to CPU request contention on undersized nodes (real usage is
+low, 10-20%; it's a request/reservation issue, not capacity) — 2 of 3
+agents running is sufficient to demonstrate the topology works.
+
+**1.2 — Application instrumentation:** Used the OpenTelemetry Operator's
+auto-injection (admission webhook + init container) rather than rebuilding
+service images — faster, and functionally equivalent to the
+"auto-instrumentation" requirement. Live and confirmed in Kibana APM
+Service Inventory for:
+- `paymentservice` (Node.js) — real transaction data
+  (`grpc.hipstershop.PaymentService/Charge`), latency/throughput graphs,
+  and a captured failed-transaction-rate spike (proves error spans work).
+- `recommendationservice` (Python) — real transaction data
+  (`ListRecommendations`), latency/throughput graphs.
+
+Screenshots: `docs/screenshots/apm-paymentservice-transactions.png`,
+`docs/screenshots/apm-recommendationservice-transactions.png`.
+
+**Gap vs. full 1.2 requirement:** auto-injection gives HTTP/gRPC
+auto-instrumentation only — it does NOT add the required custom spans
+(e.g. "validate-cart-contents") or custom business-context attributes,
+since that requires modifying application source, not just injecting the
+SDK. The custom span code is already written
+(`instrumentation/paymentservice/paymentSpans.js`,
+`instrumentation/recommendationservice/otel_instrumentation.py`) but not
+yet wired into the running containers. **This is the next task**, needed
+to fully satisfy 1.2's "at least 2 custom spans + custom attributes"
+requirement.
+
+**frontend (Go)** — not yet instrumented live (only 2 of 3 target services
+are). Code is written (`instrumentation/frontend/`) but Go auto-injection
+via the Operator is experimental/eBPF-based, judged too risky for the
+remaining time; if pursued, would need image rebuild instead.
+
+**Not yet done:** 1.3 full checkout-flow trace waterfall + Service Map
+screenshots (needs `generate-checkout-traffic.sh` run against live
+frontend); custom spans wiring above; Sections 2 and remainder of 3.
+
+**One notable debugging lesson kept for reference:** Elastic Cloud
+**Serverless** Observability projects use OTel-native index naming
+(`traces-generic.otel-*`), not the classic self-managed `traces-apm*`
+pattern — cost real time verifying data had landed. Worth checking `GET
+_cat/indices?v&s=docs.count:desc` rather than guessing an index pattern
+when verifying ingestion on serverless projects.
