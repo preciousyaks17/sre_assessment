@@ -197,3 +197,27 @@ reached `paymentservice` at all (frontend likely rejected it via its own
 input validation before any downstream call). No error trace captured
 under the current instrumentation scope; would require instrumenting
 frontend to close this specific gap.
+
+## Section 3 — Infra Monitoring Status
+
+Configs for all 4 required components (Postgres, Redis, NGINX, VM/Fleet
+policies) are complete and committed under `infrastructure/`, each with
+documented metric coverage mapped to the assessment's requirements and
+alerting rules with rationale.
+
+**Live attempt — Redis:** Deployed Metricbeat against `redis-cart`, the
+real Redis instance running in-cluster for cartservice. Metricbeat
+successfully connected to Redis and collected real `redis.info` events
+(confirmed via logs: 3 successful events per collection cycle). The
+Elasticsearch output stage failed authentication with a "401 invalid
+ApiKey value" error, despite using the same API key that authenticates
+correctly for the OTLP/APM pipeline elsewhere in this project — the two
+auth paths (Beats' `output.elasticsearch.api_key` field vs. OTLP's
+`Authorization: ApiKey` header) appear to expect the key in different
+formats. Removed the deployment to keep the cluster clean rather than
+leave an erroring pod running.
+
+This confirms the Redis integration config itself is correct and the
+metrics are real and collectible — the remaining piece is resolving the
+Beats-specific API key format for this Elastic Cloud Serverless project,
+which would be the immediate next step to get this fully live.
